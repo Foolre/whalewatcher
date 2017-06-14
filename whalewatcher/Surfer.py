@@ -1,16 +1,12 @@
 #!/usr/bin/python3
+import hmac, hashlib
 import json
 import urllib
 from urllib.request import urlopen, Request
 import time
 
-try:
-    import credentials.py
-except:
-    apikey=''
-    secret=''
-    api_url='https://bittrex.com/api/v1.1/'
-
+import credentials
+from credentials import apikey, secret
 PUBLIC_COMMANDS = '''{
     "getmarkets": null,
     "getcurrencies": null,
@@ -38,36 +34,46 @@ ACCOUNT_COMMANDS = '''{
     "getdeposithistory": "currency"
 }'''
 
-def request(*args, **kwargs):
-    uri='https://bittrex.com/api/v1.1/'
-    if args[0] == 'public':
-        url=uri+args[0]+'/'+args[1]+'?'
+def btrequest(url):
+    time.sleep(1)
+    uri='https://bittrex.com/api/v1.1{0}'
+    headers = { 'Content-Type': 'application/json' }
+    headers['apisign'] = hmac.new(secret.encode(), uri.format(url).encode(), hashlib.sha512).hexdigest() 
+    #print("requesting {0}".format(uri.format(url)))
+    req = Request(uri.format(url), headers=headers)
+    response = urlopen(req).read().decode()
+    parsed = json.loads(response)
+    return parsed["result"]
 
-    headers = kwargs['headers']
-    del kwargs['headers']
-    quote_url_string(kwargs)
-    build_request(url)
+def comparebidpaid(bid, paid):
+    result=((bid - paid ) / ((bid + paid) / 2)) * 100
+    if result > float(0):
+        return True
+    else:
+        return False
 
-def quote_url_string(kwargs):
-    keys = sorted(kwargs.keys())
-    for key in keys:
-        params.append(key + '=' + urllib.parse.quote(str(kwargs[key])))
-
-def build_request(url):
-    query = url + '&'.join(params)
-    print(query)
+while True:
+    nonce = '&nonce='+urllib.parse.quote(str(int(time.time() * 1000))) + '&apikey=' + apikey
+    uri = '/account/getbalance?currency={0}' + nonce
+    balance = {}
+    balance['btc'] = btrequest(uri.format('btc'))
+    balance['eth'] = btrequest(uri.format('eth'))
+    uri = '/public/getmarketsummary?market=BTC-ETH'
+    market = btrequest(uri)
+    uri = '/account/getorderhistory?market=BTC-ETH' + nonce
+    history = btrequest(uri)
+    print(history)
     exit(1)
-    req = urlopen(Request(url + query, headers=headers))
-    print(req.read())
-
-params = []
-headers = { 'Content-Type': 'application/json' }
-nonce = urllib.parse.quote(str(int(time.time() * 1000)))
-markets = 'BTC-ETH'
-request('public','getorderbook', headers=headers, nonce=nonce, markets=markets)
-#url = 'https://bittrex.com/api/v1.1/public/getorderbook?'
-
-#headers['apisign']=hmac.new(secret.encode(), url.encode(), hashlibe.sha512).hexdigest()
-
-#test=BittrexSurfer()
-#print(test)
+    if history['OrderType'] == "LIMIT_BUY":
+        unitpricepaid = history["PricePerUnit"]
+        amountsell = history["Price"]
+        amountbuy = history["Quantity"]
+        available = balance['eth']['Available']
+        unitbid = market[0]['Bid']
+        difference = float((amountbuy * unitbid ) - amountsell)
+        if comparebidpaid(unitbid, unitpricepaid):
+            print('profit: btc {0:f}'.format(difference))
+        else:
+            loss = float((amountbuy * unitbid ) - amountsell)
+            print('loss btc {0:f}'.format(difference))
+    time.sleep(5)
